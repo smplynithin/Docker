@@ -1,0 +1,82 @@
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    # alpine = minimal image, smaller and faster to pull
+    container_name: devshelf-db
+    env_file: .env
+    # PostgreSQL reads POSTGRES_USER, POSTGRES_PASSWORD,
+    # POSTGRES_DB from .env and creates them on first startup
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # /var/lib/postgresql/data is where PostgreSQL stores all data
+      # mapping to named volume means data survives container restarts
+    healthcheck:
+      # pg_isready checks if PostgreSQL is accepting connections
+      # -U devshelf uses our specific user
+      test: ["CMD", "pg_isready", "-U", "devshelf"]
+      interval: 10s   # check every 10 seconds
+      timeout: 5s     # fail if no response in 5 seconds
+      retries: 5      # mark unhealthy after 5 failures
+    networks:
+      - backend-net
+
+  # ── Redis ─────────────────────────────────────────────
+  cache:
+    image: redis:7-alpine
+    container_name: devshelf-cache
+    volumes:
+      - redis-data:/data
+      # /data is where Redis stores its persistence files
+    healthcheck:
+      # redis-cli ping returns PONG if Redis is alive
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend-net
+
+  # ── FastAPI Backend ───────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      # context = folder Docker uses as root for the build
+      # Dockerfile is inside ./backend/
+    container_name: devshelf-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+      # host:container → your machine port 8000 maps to container port 8000
+      # only for Phase 1 testing — Nginx will handle this in Phase 2
+    depends_on:
+      db:
+        condition: service_healthy
+        # backend only starts AFTER db passes healthcheck
+        # prevents "connection refused" errors on startup
+      cache:
+        condition: service_healthy
+    networks:
+      - backend-net
+    volumes:
+      - ./backend/app:/app/app
+      # bind mount: your local code folder → container code folder
+      # changes you make locally reflect instantly in container
+      # this is why --reload in uvicorn works
+
+# ── Networks ──────────────────────────────────────────────
+networks:
+  backend-net:
+    driver: bridge
+    # bridge network = containers can talk to each other by name
+    # db, cache, backend can all reach each other
+    # nothing outside this network can reach db or cache directly
+
+# ── Volumes ───────────────────────────────────────────────
+volumes:
+  postgres-data:
+    # Docker manages this volume on your host machine
+    # survives docker compose down
+    # only deleted with docker compose down -v
+  redis-data:
