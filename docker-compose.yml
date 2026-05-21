@@ -2,81 +2,85 @@ services:
 
   # ── PostgreSQL ────────────────────────────────────────
   db:
-    image: postgres:15-alpine
-    # alpine = minimal image, smaller and faster to pull
-    container_name: devshelf-db
-    env_file: .env
-    # PostgreSQL reads POSTGRES_USER, POSTGRES_PASSWORD,
-    # POSTGRES_DB from .env and creates them on first startup
+    image: postgres:15-alpine        # official postgres image, alpine = minimal size
+    container_name: devshelf-db      # fixed name so we can reference it easily
+    env_file: .env                   # reads POSTGRES_USER, PASSWORD, DB from .env
+    restart: always                  # auto restart if container crashes or codespace restarts
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      # /var/lib/postgresql/data is where PostgreSQL stores all data
-      # mapping to named volume means data survives container restarts
+      - postgres-data:/var/lib/postgresql/data  # named volume → data survives container restart
     healthcheck:
-      # pg_isready checks if PostgreSQL is accepting connections
-      # -U devshelf uses our specific user
-      test: ["CMD", "pg_isready", "-U", "devshelf"]
-      interval: 10s   # check every 10 seconds
-      timeout: 5s     # fail if no response in 5 seconds
-      retries: 5      # mark unhealthy after 5 failures
+      test: ["CMD", "pg_isready", "-U", "devshelf"]  # checks if postgres is accepting connections
+      interval: 10s                  # run health check every 10 seconds
+      timeout: 5s                    # fail if no response within 5 seconds
+      retries: 5                     # mark unhealthy after 5 consecutive failures
     networks:
-      - backend-net
+      - backend-net                  # only backend can reach postgres, not internet
 
   # ── Redis ─────────────────────────────────────────────
   cache:
-    image: redis:7-alpine
-    container_name: devshelf-cache
+    image: redis:7-alpine            # official redis image, alpine = minimal size
+    container_name: devshelf-cache   # fixed name referenced in REDIS_URL in .env
+    restart: always                  # auto restart on failure or codespace restart
     volumes:
-      - redis-data:/data
-      # /data is where Redis stores its persistence files
+      - redis-data:/data             # /data is where redis stores its snapshot file
     healthcheck:
-      # redis-cli ping returns PONG if Redis is alive
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD", "redis-cli", "ping"]  # redis responds PONG if alive
+      interval: 10s                  # check every 10 seconds
+      timeout: 5s                    # fail if no response in 5 seconds
+      retries: 5                     # mark unhealthy after 5 failures
     networks:
-      - backend-net
+      - backend-net                  # only backend can reach redis, not internet
 
   # ── FastAPI Backend ───────────────────────────────────
   backend:
     build:
-      context: ./backend
-      # context = folder Docker uses as root for the build
-      # Dockerfile is inside ./backend/
-    container_name: devshelf-backend
-    env_file: .env
-    ports:
-      - "8000:8000"
-      # host:container → your machine port 8000 maps to container port 8000
-      # only for Phase 1 testing — Nginx will handle this in Phase 2
+      context: ./backend             # use ./backend folder as build context
+                                     # Docker looks for Dockerfile inside this folder
+    container_name: devshelf-backend # fixed name so nginx can resolve it by name
+    env_file: .env                   # reads DATABASE_URL and REDIS_URL from .env
+    restart: always                  # auto restart on failure
     depends_on:
       db:
-        condition: service_healthy
-        # backend only starts AFTER db passes healthcheck
-        # prevents "connection refused" errors on startup
+        condition: service_healthy   # wait for postgres healthcheck to pass before starting
       cache:
-        condition: service_healthy
+        condition: service_healthy   # wait for redis healthcheck to pass before starting
     networks:
-      - backend-net
+      - backend-net                  # can reach postgres and redis
+      - frontend-net                 # can be reached by nginx
     volumes:
-      - ./backend/app:/app/app
-      # bind mount: your local code folder → container code folder
-      # changes you make locally reflect instantly in container
-      # this is why --reload in uvicorn works
+      - ./backend/app:/app/app       # bind mount: local code synced into container
+                                     # code changes reflect instantly without rebuild
+
+  # ── Frontend + Nginx ──────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend            # use ./frontend folder as build context
+                                     # stage 1: node builds react → stage 2: nginx serves it
+    container_name: devshelf-frontend  # fixed container name
+    restart: always                  # auto restart on failure
+    ports:
+      - "80:80"                      # host port 80 → container port 80
+                                     # this is the only port exposed to internet
+                                     # all traffic enters here first
+    depends_on:
+      - backend                      # start after backend is running
+    networks:
+      - frontend-net                 # nginx routes /api/* to backend via this network
 
 # ── Networks ──────────────────────────────────────────────
 networks:
+  frontend-net:
+    driver: bridge                   # nginx ↔ backend on this network
+                                     # bridge = containers talk by service name
   backend-net:
-    driver: bridge
-    # bridge network = containers can talk to each other by name
-    # db, cache, backend can all reach each other
-    # nothing outside this network can reach db or cache directly
+    driver: bridge                   # backend ↔ postgres ↔ redis on this network
+                                     # completely isolated from internet and nginx
 
 # ── Volumes ───────────────────────────────────────────────
 volumes:
-  postgres-data:
-    # Docker manages this volume on your host machine
-    # survives docker compose down
-    # only deleted with docker compose down -v
-  redis-data:
+  postgres-data:                     # docker managed volume for postgresql data
+                                     # lives at /var/lib/docker/volumes/devshelf_postgres-data
+                                     # survives docker compose down
+                                     # only deleted with docker compose down -v
+  redis-data:                        # docker managed volume for redis snapshot
+                                     # survives container restarts
