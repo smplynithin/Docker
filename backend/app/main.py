@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base
 from .routes import bookmarks_router, snippets_router
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Create all tables in PostgreSQL on startup
 # If tables already exist, this does nothing (safe to run repeatedly)
@@ -14,7 +15,7 @@ app = FastAPI(
     description="Personal developer bookmark and snippet manager",
     version="1.0.0"
 )
-
+Instrumentator().instrument(app).expose(app)
 # CORS = Cross Origin Resource Sharing
 # Without this, your React frontend (port 3000) cannot call
 # the FastAPI backend (port 8000) — browser blocks it
